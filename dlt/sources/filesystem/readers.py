@@ -1,4 +1,5 @@
 from typing import TYPE_CHECKING, Any, Iterable, Iterator, Optional
+import contextlib
 
 from dlt.common import json
 from dlt.common.typing import copy_sig_any
@@ -126,16 +127,23 @@ def _read_csv_duckdb(
     helper = fetch_arrow if use_pyarrow else fetch_json
 
     add_filename = duckdb_kwargs.pop("filename", False)
+    conn = duckdb_kwargs.pop("conn", None)
 
-    for item in items:
-        with item.open() as f:
-            file_data = duckdb.from_csv_auto(f, **duckdb_kwargs)
+    with contextlib.ExitStack() as stack:
+        # interleaved readers invalidate each other, so a reader that didn't get one from
+        # the caller needs its own.
+        if conn is None:
+            conn = stack.enter_context(duckdb.connect())
 
-            for batch in helper(file_data, chunk_size):
-                if add_filename:
-                    for record in batch:
-                        record["filename"] = item["file_name"]  # type: ignore
-                yield batch
+        for item in items:
+            with item.open() as f:
+                file_data = conn.from_csv_auto(f, **duckdb_kwargs)
+
+                for batch in helper(file_data, chunk_size):
+                    if add_filename:
+                        for record in batch:
+                            record["filename"] = item["file_name"]  # type: ignore
+                    yield batch
 
 
 if TYPE_CHECKING:
